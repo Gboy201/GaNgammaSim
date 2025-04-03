@@ -1,0 +1,4 @@
+__pycache__
+*.csv
+node_modules
+venv
