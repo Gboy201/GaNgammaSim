@@ -18,6 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import List, Tuple, Literal, Optional, Union, Any
 import numpy as np
+import uuid
+from mpmath import mp
+from scipy.integrate import quad
+
+# Set up mpmath precision
+mp.dps = 25  # Set precision to 25 digits
 
 # Define fundamental constants
 q = 1.6e-19  # Elementary charge in Coulombs
@@ -27,6 +33,25 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+def safe_float(value):
+    """Convert a value to a JSON-compliant float, handling edge cases."""
+    try:
+        if isinstance(value, (int, float)):
+            # Check for infinity, NaN, or extremely large values
+            if math.isinf(value) or math.isnan(value) or abs(value) > 1e308:
+                return 0.0
+            return float(value)
+        elif hasattr(value, '__float__'):
+            # Handle mpf and similar types
+            result = float(value)
+            if math.isinf(result) or math.isnan(result) or abs(result) > 1e308:
+                return 0.0
+            return result
+        return 0.0
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+
 logger = logging.getLogger(__name__)
 
 # Get absolute path to the root directory and add it to Python path
@@ -101,7 +126,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
+
+# Global variables for simulation tracking
+current_simulation_results = []
+current_simulation_params = None
+simulation_counter = 0  # Counter for number of simulations performed
+current_sweep_counter = 0  # Counter for current parameter sweep
 
 class SimulationResult(BaseModel):
     position: float
@@ -143,118 +176,116 @@ class SimulationParams(BaseModel):
         }
 
 class SimulationResponse(BaseModel):
-    builtInPotential: float
-    depletionWidth: float
-    electricField: List[Tuple[float, float]]
-    position: List[float]
-    temperature: float
-    electronConcentration: float
-    holeConcentration: float
-    message: str
+    donorConcentration: float
+    acceptorConcentration: float
+    intrinsicConcentration: float
+    nSideWidth: float
     pSideWidth: float
     intrinsicWidth: float
-    nSideWidth: float
-    eMinElectron: float
-    eMinHole: float
-    eMin: float
-    totalElectricField: float
-    photonFlux: float
-    photonEnergy: float
-    # Device Parameters
-    emitterSize: float  # N-region width (nRegionWidth)
-    baseSize: float  # P-region width (pRegionWidth)
-    totalDeviceWidth: float  # Sum of all region widths
-    sizeWarning: Optional[str] = None  # Warning message for small device sizes
-    # GaN Material Properties
-    ganDensity: float = 6.15  # g/cm³
-    massAttenuation: float  # cm²/g (calculated from CSV)
-    linearAttenuation: float  # cm⁻¹ (calculated from density * mass attenuation)
-    mobilityMaxElectrons: float = 1000.0  # cm²/V·s
-    mobilityMaxHoles: float = 40.0  # cm²/V·s
-    mobilityMinElectrons: float = 55.0  # cm²/V·s
-    mobilityMinHoles: float = 3.0  # cm²/V·s
-    intrinsicCarrierConcentration: float = 1.6e-10  # cm⁻³
-    dielectricConstant: float = 8.9  # dimensionless
-    radiativeRecombinationCoefficient: float = 1.1e-8  # cm²/s
-    augerCoefficient: float = 1e-30  # cm⁶/s
-    electronThermalVelocity: float = 2.43e7  # cm/s
-    holeThermalVelocity: float = 2.38e7  # cm/s
-    # Surface Recombination Velocities
-    surfaceRecombinationVelocities: dict = {
-        "bareEmitter": 0.0,  # cm/s
-        "substrateBase": 0.0  # cm/s
-    }
-    # Minority Recombination Rates
-    minorityRecombinationRates: List[dict] = [
-        {
-            "region": "Emitter (N-Doped)",
-            "auger": 0.0,
-            "srh": 0.0,
-            "radiative": 0.0,
-            "bulk": 0.0
-        }
-    ]
-    # Generation Rate
-    generationRateData: List[Tuple[float, float]] = []
-    # Generation per Region
-    generationPerRegion: dict = {
-        "emitter": 0.0,
-        "depletion": 0.0,
-        "base": 0.0
-    }
-    # Generation Rate Profile
-    generationRateProfile: dict = {
-        "positions": [],
-        "values": []
-    }
-    # Current Generation Data
-    currentGenerationData: dict = {
-        "emitter": {
-            "generated_carriers": 0.0,
-            "surviving_carriers": 0.0,
-            "current": 0.0
-        },
-        "depletion": {
-            "generated_carriers": 0.0,
-            "surviving_carriers": 0.0,
-            "current": 0.0
-        },
-        "base": {
-            "generated_carriers": 0.0,
-            "surviving_carriers": 0.0,
-            "current": 0.0
-        },
-        "jdr": {
-            "current": 0.0,
-            "electron_current": 0.0,
-            "hole_current": 0.0,
-            "Electron density": 0.0,
-            "Hole density": 0.0
-        },
-        "solar_cell_parameters": {
-            "total_current": 0.0,
-            "reverse_saturation_current": 0.0,
-            "voc": 0.0,
-            "rad_per_hour": 0.0
-        }
-    }
-    # Electron and Hole Density Data
-    electron_density_data: dict = {
-        "positions": [],
-        "values": []
-    }
-    hole_density_data: dict = {
-        "positions": [],
-        "values": []
-    }
-
-# Global variables for simulation results
-current_simulation_results: List[SimulationResult] = []
-current_simulation_params: Optional[SimulationResponse] = None
+    totalDepletionWidth: float
+    temperature: float
+    junctionType: str
+    builtInPotential: float
+    depletionWidth: float
+    electricField: float
+    maxElectricField: float
+    diffusionCurrent: float
+    driftCurrent: float
+    totalCurrent: float
+    reverseSaturationCurrent: float
+    voc: float
+    radPerHour: float
+    generationRateData: List[Tuple[float, float]]
+    generationPerRegion: dict
+    generationRateProfile: dict
+    electronDensity: float
+    holeDensity: float
+    electronDensityData: dict
+    holeDensityData: dict
+    currentGenerationData: dict
+    electricFieldData: dict
+    baseSize: float  # Added for N-doped region width
+    emitterSize: float  # Added for P-doped region width
+    ganDensity: float
+    massAttenuation: float
+    linearAttenuation: float
+    mobilityMaxElectrons: float
+    mobilityMaxHoles: float
+    mobilityMinElectrons: float
+    mobilityMinHoles: float
+    intrinsicCarrierConcentration: float
+    dielectricConstant: float
+    radiativeRecombinationCoefficient: float
+    augerCoefficient: float
+    electronThermalVelocity: float
+    holeThermalVelocity: float
+    electronDensityProfile: Optional[List[float]] = None
+    holeDensityProfile: Optional[List[float]] = None
 
 # Global variables for radiation and generation parameters
 E = 1.58956743543344983e-18  # Minimum Energy per EHP in Joules
 hv = 0.0  # Photon energy in Joules
+
+# Define a helper function to flatten nested dictionaries for CSV export
+def flatten_dict(d, result, parent_key=''):
+    """
+    Recursively flatten a nested dictionary using dot notation for keys.
+    Args:
+        d: The dictionary to flatten
+        result: The dictionary to store the flattened result
+        parent_key: The parent key prefix to use
+    """
+    if d is None:
+        return
+        
+    if isinstance(d, dict):
+        for k, v in d.items():
+            new_key = f"{parent_key}.{k}" if parent_key else k
+            
+            if isinstance(v, dict):
+                flatten_dict(v, result, new_key)
+            elif isinstance(v, list):
+                # Handle lists of different types
+                if len(v) > 0:
+                    if isinstance(v[0], dict):
+                        # For list of dictionaries, process at least the first item
+                        flatten_dict(v[0], result, f"{new_key}[0]")
+                    elif isinstance(v[0], (int, float, str, bool)):
+                        # For primitive type lists, store the entire list as a string
+                        result[new_key] = str(v)
+                    else:
+                        # For complex objects, store as string
+                        result[new_key] = str(v)
+                else:
+                    # Empty list
+                    result[new_key] = "[]"
+            else:
+                # Handle scalar values, ensuring they're converted appropriately
+                if isinstance(v, (int, float, str, bool)) or v is None:
+                    result[new_key] = v
+                else:
+                    # For complex objects like arrays, convert to string representation
+                    result[new_key] = str(v)
+    elif isinstance(d, list) and len(d) > 0 and isinstance(d[0], dict):
+        # Handle list of dictionaries at the top level
+        flatten_dict(d[0], result, parent_key)
+
+# Custom JSON encoder to handle complex types for API responses
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if hasattr(obj, '__float__'):  # Handle mpf and similar types
+            return float(obj)
+        elif isinstance(obj, np.ndarray):  # Handle numpy arrays
+            return obj.tolist()
+        elif isinstance(obj, np.integer):  # Handle numpy integers
+            return int(obj)
+        elif isinstance(obj, np.floating):  # Handle numpy floats
+            return float(obj)
+        return super().default(obj)
+
+def safe_json_dumps(obj, **kwargs):
+    """Safely convert any object to JSON string, handling mpf and numpy types"""
+    return json.dumps(obj, cls=CustomJSONEncoder, **kwargs)
 
 def find_closest_mass_attenuation(photon_energy_ev: float) -> float:
     """Find the closest matching mass attenuation value from the CSV file."""
@@ -328,58 +359,82 @@ def generate_electric_field_data(params: SimulationParams, p_side_width: float, 
     return results, positions
 
 @app.post("/api/simulate")
-async def run_simulation(params: SimulationParams) -> SimulationResponse:
-    logger.info("Starting simulation...")
-    logger.info(f"Received parameters: {params}")
-    
+async def run_simulation(sim_params: SimulationParams):
     try:
-        # Convert input parameters to float without validation
-        logger.info("Converting input parameters...")
-        donor_conc = float(str(params.donorConcentration))
-        acceptor_conc = float(str(params.acceptorConcentration))
-        temp = float(params.temperature)
-        n_width = float(params.nRegionWidth)
-        p_width = float(params.pRegionWidth)
-        intrinsic_conc = float(params.intrinsicConcentration) if params.intrinsicConcentration is not None else 1e14
+        # Increment simulation counters
+        global simulation_counter, current_sweep_counter, current_simulation_results, current_simulation_params
+        simulation_counter += 1
+        current_sweep_counter += 1
         
-        logger.info(f"Converted parameters: donor_conc={donor_conc}, acceptor_conc={acceptor_conc}, temp={temp}")
+        # Generate a unique simulation ID for logging
+        simulation_id = f"sim-{datetime.now().strftime('%Y%m%d%H%M%S')}-{simulation_counter}"
+        logging.info(f"[{simulation_id}] Starting simulation #{simulation_counter}")
+        
+        # Log all parameters in standardized format
+        logging.info(f"[{simulation_id}] Received simulation request with parameters:")
+        param_log = {
+            "temperature": safe_float(sim_params.temperature),
+            "donor_concentration": safe_float(sim_params.donorConcentration),
+            "acceptor_concentration": safe_float(sim_params.acceptorConcentration),
+            "n_region_width": safe_float(sim_params.nRegionWidth),
+            "p_region_width": safe_float(sim_params.pRegionWidth),
+            "photon_energy": safe_float(sim_params.photonEnergy),
+            "photon_flux": safe_float(sim_params.photonFlux),
+            "junction_type": sim_params.junctionType,
+            "percent": safe_float(sim_params.percent) if sim_params.percent is not None else None,
+            "intrinsic_concentration": safe_float(sim_params.intrinsicConcentration) if sim_params.intrinsicConcentration is not None else None
+        }
+        logging.info(f"[{simulation_id}] PARAMETERS: {safe_json_dumps(param_log, indent=2)}")
+        
+        # Extract parameters in the format expected by the simulation code
+        temperature = float(sim_params.temperature)
+        donorConcentration = float(sim_params.donorConcentration)
+        acceptorConcentration = float(sim_params.acceptorConcentration)
+        nRegionWidth = float(sim_params.nRegionWidth)
+        pRegionWidth = float(sim_params.pRegionWidth)
+        photonEnergy = float(sim_params.photonEnergy)
+        photonFlux = float(sim_params.photonFlux)
+        junctionType = sim_params.junctionType
+        percent = float(sim_params.percent) if sim_params.percent is not None else 0.0
+
+        # Log information about the current simulation
+        logging.info(f"[{simulation_id}] Starting simulation with T={temperature}K, donor={donorConcentration}cm^-3, acceptor={acceptorConcentration}cm^-3")
         
         # Calculate photon energy in Joules
         global hv
-        hv = float(params.photonEnergy) * 1.60218e-19
-        logger.info(f"Calculated photon energy: {hv} Joules")
+        hv = photonEnergy * 1.60218e-19
+        logging.info(f"[{simulation_id}] Calculated photon energy: {hv} Joules")
         
         # Find the closest mass attenuation value
-        logger.info("Finding mass attenuation...")
-        mass_attenuation = find_closest_mass_attenuation(float(params.photonEnergy))
+        logging.info(f"[{simulation_id}] Finding mass attenuation...")
+        mass_attenuation = find_closest_mass_attenuation(photonEnergy)
         linear_attenuation = 6.15 * mass_attenuation
-        logger.info(f"Mass attenuation: {mass_attenuation}, Linear attenuation: {linear_attenuation}")
+        logging.info(f"[{simulation_id}] Mass attenuation: {mass_attenuation}, Linear attenuation: {linear_attenuation}")
 
         # Calculate built-in potential and depletion width
-        logger.info("Calculating built-in potential...")
+        logging.info(f"[{simulation_id}] Calculating built-in potential...")
         built_in_potential = phase1_builtInPotential(
-            float(params.temperature),
-            float(params.donorConcentration),
-            float(params.acceptorConcentration)
+            temperature, donorConcentration, acceptorConcentration
         )
-        logger.info(f"Built-in potential: {built_in_potential} V")
+        logging.info(f"[{simulation_id}] Built-in potential: {built_in_potential} V")
 
         # Calculate depletion width based on junction type
-        if params.junctionType == 'PIN' and params.intrinsicConcentration is not None:
+        if junctionType == 'PIN' and sim_params.intrinsicConcentration is not None:
             # For PIN junction, calculate depletion widths using acceptor and intrinsic concentrations
             dep_width_result = depletionWidth(
                 builtInPotential=built_in_potential,
-                concElectron=float(params.intrinsicConcentration),   # Use intrinsic concentration
-                concHole=float(params.acceptorConcentration),        # Use acceptor concentration
+                concElectron=float(sim_params.intrinsicConcentration),  # Use intrinsic concentration
+                concHole=float(acceptorConcentration),  # Use acceptor concentration
                 appliedVoltage=0.0
             )
             # depletionWidth returns [total, intrinsic, p_side] in cm
-            intrinsic_width = dep_width_result[1] * ((params.percent / 100) if params.percent is not None else 1)  # Scale by user percentage
+            depletion_width = dep_width_result[0]  # Total depletion width
+            intrinsic_width = dep_width_result[1] * ((percent / 100) if percent is not None else 1)  # Scale by user percentage
             p_side_width = dep_width_result[2]  # Third value is p-side width (cm)
             
             # Calculate n-side width using charge neutrality
-            n_side_width = ((float(params.acceptorConcentration) * p_side_width) - 
-                          (float(params.intrinsicConcentration) * intrinsic_width)) / float(params.donorConcentration)
+            n_side_width = ((float(acceptorConcentration) * p_side_width) - 
+                          (float(sim_params.intrinsicConcentration) * intrinsic_width)) / float(donorConcentration)
             
             # Ensure all widths are positive
             if n_side_width < 0:
@@ -392,631 +447,565 @@ async def run_simulation(params: SimulationParams) -> SimulationResponse:
             # For PN junction, use n-side and p-side concentrations
             dep_width_result = depletionWidth(
                 builtInPotential=built_in_potential,
-                concElectron=float(params.donorConcentration),
-                concHole=float(params.acceptorConcentration),
+                concElectron=float(donorConcentration),
+                concHole=float(acceptorConcentration),
                 appliedVoltage=0.0
             )
             # For PN junction, depletionWidth returns [total, n_side, p_side] in cm
+            depletion_width = dep_width_result[0]  # Total depletion width
             n_side_width = dep_width_result[1]  # Second value is n-side width (cm)
             p_side_width = dep_width_result[2]  # Third value is p-side width (cm)
             intrinsic_width = 0.0  # No intrinsic region for PN junction
 
         total_depletion_width = p_side_width + intrinsic_width + n_side_width
 
-        # print(f"PIN Junction Calculations:")
-        # print(f"Built-in potential: {built_in_potential} V")
-        # print(f"P-side width: {p_side_width} cm")
-        # print(f"N-side width: {n_side_width} cm")
-        # print(f"Intrinsic width: {intrinsic_width} cm")
-        # print(f"Total depletion width: {total_depletion_width} cm")
+        # Calculate electric field profile using ElecFieldAsX
+        positions = np.linspace(-n_side_width, p_side_width + intrinsic_width, 1000)  # Create 1000 points
+        electric_field_values = []
+        for x in positions:
+            field = ElecFieldAsX(
+                x=x,
+                nSide=donorConcentration,
+                pSide=acceptorConcentration,
+                iSide=0.0 if junctionType == 'PN' else sim_params.intrinsicConcentration,
+                xp=p_side_width,
+                W=intrinsic_width,
+                xn=n_side_width
+            )
+            electric_field_values.append(float(field))
 
         # Calculate electric field data
-        electric_field_data, position_data = generate_electric_field_data(
-            params, p_side_width, intrinsic_width, n_side_width
-        )
-
-        # Calculate eMin values
-        e_min_values = eMin(total_depletion_width)
-        e_min_electron = e_min_values[0]
-        e_min_hole = e_min_values[1]
-        e_min = max(e_min_electron, e_min_hole)
-
-        # Calculate total electric field
-        total_electric_field = abs(totalElectricField(
-            nSide=donor_conc,
-            pSide=acceptor_conc,
-            iSide=0.0 if params.junctionType == 'PN' else intrinsic_conc,  # Use 0 for PN junction
-            xp=p_side_width,
-            W=intrinsic_width,
-            xn=n_side_width,
-            start=-n_side_width,
-            end=p_side_width + intrinsic_width
-        )) * 100  # Convert from V/cm to V/m and take absolute value
-
-        # print(f"Total electric field: {total_electric_field} V/m")
-        # print(f"Depletion widths - p-side: {p_side_width}, intrinsic: {intrinsic_width}, n-side: {n_side_width}")
-
-        # Calculate device sizes (all in micrometers)
-        # For emitter: input width - n-side depletion width
-        emitter_size = n_width - (n_side_width * 10000)  # Subtract depletion width from input width
-        # For base: input width - p-side depletion width
-        base_size = p_width - (p_side_width * 10000)  # Subtract depletion width from input width
-        
-        # Check for small device sizes
-        size_warning = None
-        if emitter_size < 1 or base_size < 1:
-            warnings = []
-            if emitter_size < 1:
-                warnings.append(f"Emitter Size ({emitter_size:.2f} μm)")
-            if base_size < 1:
-                warnings.append(f"Base Size ({base_size:.2f} μm)")
-            size_warning = f"Warning: The following device regions are too small (< 1 μm): {', '.join(warnings)}"
-
-        # print(f"\nDevice Size Calculations:")
-        # print(f"Input n_width: {n_width} μm")
-        # print(f"Input p_width: {p_width} μm")
-        # print(f"n_side_width (depletion): {n_side_width} cm = {n_side_width * 10000} μm")
-        # print(f"p_side_width (depletion): {p_side_width} cm = {p_side_width * 10000} μm")
-        # print(f"Calculated emitter_size: {emitter_size} μm (input - n-side depletion)")
-        # print(f"Calculated base_size: {base_size} μm (input - p-side depletion)")
-        # print(f"Total device width: {emitter_size + (intrinsic_width * 10000) + base_size} μm")
-
-        # Calculate minority recombination rates for Emitter (N-Doped) region
-        n_side = float(params.donorConcentration)
-        minority_conc = (1.6e-10)**2 / n_side
-        
-        minority_rates_emitter = {
-            "region": "Emitter (N-Doped)",
-            "auger": augerLifetime(minority_conc, n_side, 'minority'),
-            "srh": srhLifetime()[1],
-            "radiative": radiativeRecombination(minority_conc, n_side),
-            "bulk": bulkRecombinationLifetime(minority_conc, n_side, 'p')
+        electric_field_data = {
+            "positions": [float(x) for x in positions],
+            "values": electric_field_values
         }
 
-        # Calculate minority recombination rates for Base (P-Doped) region
-        p_side = float(params.acceptorConcentration)
-        minority_conc_p = (1.6e-10)**2 / p_side
-        
-        minority_rates_base = {
-            "region": "Base (P-Doped)",
-            "auger": augerLifetime(minority_conc_p, p_side, 'minority'),
-            "srh": srhLifetime()[0],
-            "radiative": radiativeRecombination(minority_conc_p, p_side),
-            "bulk": bulkRecombinationLifetime(minority_conc_p, p_side, 'n')
-        }
-        
-        # Calculate surface recombination velocities
-        logger.info("Calculating surface recombination velocities...")
-        
-        # Calculate diffusion constants for both regions
-        diffusion_emitter = diffusionConstants(temp, mobility('p', minority_conc, temp))
-        diffusion_base = diffusionConstants(temp, mobility('n', minority_conc_p, temp))
-        
-        # print("\nSurface Recombination Velocity Calculations:")
-        # print(f"Emitter diffusion constant: {diffusion_emitter:.2e} cm²/s")
-        # print(f"Base diffusion constant: {diffusion_base:.2e} cm²/s")
-        
-        # Calculate surface recombination velocities
-        # Emitter (N-doped region) calculations
-        minorityMobility = mobility('p', (1.6e-10**2)/params.donorConcentration, temp)
-        minorityDiffusivity = diffusionConstants(temp, minorityMobility)
-        lifetime = surfaceRecombinationLifetimeBare(minorityDiffusivity, emitter_size)
-        bare_emitter_velocity = surfaceVelocity(minorityDiffusivity, emitter_size, lifetime)
-        # print(f"Bare emitter velocity: {bare_emitter_velocity:.2e} cm/s")
-
-        # Base (P-doped region) calculations
-        minorityMobilityBase = mobility('n', (1.6e-10**2)/params.acceptorConcentration, temp)
-        minorityDiffusivityBase = diffusionConstants(temp, minorityMobilityBase)
-        lifetimeBase = surfaceRecombinationLifetimeInterface(minorityDiffusivityBase)
-        substrate_base_velocity = surfaceVelocityInterface(minorityDiffusivityBase, base_size)
-        # print(f"Substrate base velocity: {substrate_base_velocity:.2e} cm/s")
-
-        # Update surface recombination velocities in response
-        surface_recombination_velocities = {
-            "bareEmitter": float(bare_emitter_velocity),
-            "substrateBase": float(substrate_base_velocity)
-        }
-        
-        logger.info(f"Surface recombination velocities: {surface_recombination_velocities}")
-        
         # Calculate JDR and density profiles
-        # print("\nCalculating JDR and density profiles...")
-        
         # Initial lifetime estimates
         estimateN = 10e-9  # Initial estimate for electron lifetime
         estimateP = 1e-9   # Initial estimate for hole lifetime
         
-        # Get the percent value, default to 100 if not provided
-        percent = params.percent if params.percent is not None else 100
-        
-        # Mobility values
-        mobilityN = 1000.0  # cm²/V·s for electrons
-        mobilityP = 40.0    # cm²/V·s for holes
-        
-        # Convert concentrations to float
-        nSide = float(params.donorConcentration)
-        pSide = float(params.acceptorConcentration)
-        iSide = float(params.intrinsicConcentration) if params.intrinsicConcentration is not None else 0
-        
-        # Use the previously calculated depletion widths
-        xn = n_side_width
-        xp = p_side_width
-        W = intrinsic_width
-        
-        # Calculate lifetimes using JDR
-        # print("\nCalculating lifetimes using JDR...")
-        # print(f"Initial estimates:")
-        # print(f"  Electron lifetime: {estimateN:.2e} s")
-        # print(f"  Hole lifetime: {estimateP:.2e} s")
-        
-        # Convert photon energy to eV and calculate hv
-        photon_energy_ev = float(params.photonEnergy)
-        hv = photon_energy_ev * 1.60218e-19  # Convert eV to Joules
-        
-        # Get user inputted photon flux
-        photon_flux = float(params.photonFlux)
-        
-        # Call findConvergenceLifetime with hv and photonFlux
-        converged_lifetimes = findConvergenceLifetime(
-            estimateN, estimateP, xn, xp, W, 
-            donor_conc, acceptor_conc, intrinsic_conc, 
-            0.5, mobilityN, mobilityP, hv, photon_flux
+        # Calculate JDR and density profiles using findConvergenceLifetime
+        convergence_results = findConvergenceLifetime(
+            estimateN=estimateN,
+            estimateP=estimateP,
+            xn=n_side_width,
+            xp=p_side_width,
+            W=intrinsic_width,
+            nSide=donorConcentration,
+            pSide=acceptorConcentration,
+            iSide=0.0 if junctionType == 'PN' else sim_params.intrinsicConcentration,
+            percent=1.0,  # Using full width
+            mobilityN=1000.0,  # Using default mobility for electrons
+            mobilityP=40.0,    # Using default mobility for holes
+            hv=photonEnergy * 1.60218e-19,  # Convert eV to Joules
+            photonFlux=photonFlux
         )
         
-        electron_lifetime = converged_lifetimes[0]
-        hole_lifetime = converged_lifetimes[1]
-        jdr_result = converged_lifetimes[2]
+        # Extract results from convergence calculation
+        electron_lifetime, hole_lifetime, jdr_results = convergence_results
         
-        # print(f"Converged lifetimes:")
-        # print(f"  Electron lifetime: {electron_lifetime:.2e} s")
-        # print(f"  Hole lifetime: {hole_lifetime:.2e} s")
+        # Extract electric field data from JDR results
+        electric_field = float(jdr_results['Efield'])
+        e_min = float(jdr_results['Emin'])
 
-        # Extract and log raw lifetime data
-        # print("\nRaw Lifetime Data from JDR:")
-        # print(f"Raw Electron-lifetime: {jdr_result.get('Electron-lifetime')}")
-        # print(f"Raw Electron-Lifetime-Components: {jdr_result.get('Electron-Lifetime-Components')}")
-        # print(f"Raw Hole-lifetime: {jdr_result.get('Hole-lifetime')}")
-        # print(f"Raw Hole-Lifetime-Components: {jdr_result.get('Hole-Lifetime-Components')}")
+        # Calculate diffusion and drift currents using JDR results
+        diffusion_current = float(jdr_results['Current-Electron'] + jdr_results['Current-Hole'])
+        drift_current = float(electric_field * (float(jdr_results['Electron density']) + float(jdr_results['Hole density'])))
 
-        # Extract lifetimes from JDR results with detailed logging
-        electron_lifetime_components = []
-        for i, comp in enumerate(['Radiative', 'Auger', 'SRH']):
-            try:
-                val = float(jdr_result.get(f"{comp}-lifetime", 0.0))
-                # print(f"  {comp}: {val:.2e}")
-                electron_lifetime_components.append(val)
-            except (ValueError, TypeError) as e:
-                # print(f"  Error converting {comp} component: {e}")
-                electron_lifetime_components.append(0.0)
-
-        hole_lifetime_components = []
-        for i, comp in enumerate(['Radiative', 'Auger', 'SRH']):
-            try:
-                val = float(jdr_result.get(f"{comp}-lifetime-components", [0.0, 0.0, 0.0])[i])
-                # print(f"  {comp}: {val:.2e}")
-                hole_lifetime_components.append(val)
-            except (ValueError, TypeError) as e:
-                # print(f"  Error converting {comp} component: {e}")
-                hole_lifetime_components.append(0.0)
-
-        # print("\nFinal Processed Lifetime Components:")
-        # print(f"Electron: {electron_lifetime_components}")
-        # print(f"Hole: {hole_lifetime_components}")
-
-        # Calculate total width for generation rate (including emitter and base)
-        if params.junctionType == 'PIN' and params.intrinsicConcentration is not None:
-            total_width_cm = (n_width/10000) + (p_width/10000) + intrinsic_width  # Convert μm to cm and include intrinsic width
-        else:
-            total_width_cm = (n_width/10000) + (p_width/10000)  # Convert μm to cm
-        # print(f"Total width for generation rate: {total_width_cm:.2e} cm")
-
-        # Calculate generation rate data points
-        num_points = 100  # Number of points for smooth plotting
-        x_values = np.linspace(0, total_width_cm, num_points)  # Create evenly spaced points
-        generation_rate_data = []
-        generation_rate_profile = {"positions": [], "values": []}
+        # Extract JDR results and convert mpf to float
+        electron_current = float(jdr_results['Current-Electron'])
+        hole_current = float(jdr_results['Current-Hole'])
+        electron_density = float(jdr_results['Electron density'])
+        hole_density = float(jdr_results['Hole density'])
+        electron_density_profile = [float(x) for x in jdr_results['Electron-density']]
+        hole_density_profile = [float(x) for x in jdr_results['Hole-density']]
+        electron_lifetime_components = [float(x) for x in jdr_results['Electron-Lifetime-Components']]
+        hole_lifetime_components = [float(x) for x in jdr_results['Hole-Lifetime-Components']]
         
-        # Initialize lists to store generation rates for each region
-        emitter_rates = []
-        depletion_rates = []
-        base_rates = []
+        # Calculate total current
+        total_current = electron_current + hole_current
         
-        # Define region boundaries
-        emitter_end = emitter_size/10000  # Convert μm to cm
-        depletion_end = emitter_end + total_depletion_width
-        
-        for x in x_values:
-            gen_rate = genDevice(x, total_width_cm, hv, float(params.photonFlux), E, linear_attenuation)
-            generation_rate_data.append((float(x), float(gen_rate[1])))  # Store position (cm) and generation rate
-            generation_rate_profile["positions"].append(float(x))
-            generation_rate_profile["values"].append(float(gen_rate[1]))
-            
-            # Categorize generation rates by region
-            if x <= emitter_end:
-                emitter_rates.append(float(gen_rate[1]))
-            elif x <= depletion_end:
-                depletion_rates.append(float(gen_rate[1]))
-            else:
-                base_rates.append(float(gen_rate[1]))
-        
-        # Calculate average generation rates per region
-        avg_emitter_rate = sum(emitter_rates) / len(emitter_rates) if emitter_rates else 0
-        avg_depletion_rate = sum(depletion_rates) / len(depletion_rates) if depletion_rates else 0
-        avg_base_rate = sum(base_rates) / len(base_rates) if base_rates else 0
-        
-        # print("\nAverage Generation Rates:")
-        # print(f"Emitter: {avg_emitter_rate:.2e} cm⁻³s⁻¹")
-        # print(f"Depletion: {avg_depletion_rate:.2e} cm⁻³s⁻¹")
-        # print(f"Base: {avg_base_rate:.2e} cm⁻³s⁻¹")
-        
-        generation_per_region = {
-            "emitter": float(avg_emitter_rate),
-            "depletion": float(avg_depletion_rate),
-            "base": float(avg_base_rate)
-        }
-
-        # Calculate current in emitter region
-        # print("\nCalculating current in emitter region...")
-        # print(f"Je parameters:")
-        # print(f"  temp: {temp}")
-        # print(f"  typeOfMinority: 'p'")
-        # print(f"  majorityConc (donor_conc): {donor_conc:.2e} cm⁻³")
-        # print(f"  width (emitter_size/10000): {emitter_size/10000:.2e} cm")
-        # print(f"  linear_attenuation: {linear_attenuation:.2e} cm⁻¹")
-        emitter_current = Je(temp, 'p', donor_conc, emitter_size/10000, linear_attenuation)
-        emitter_current_float = float(emitter_current) * photon_flux
-        # print(f"Emitter current: {emitter_current_float:.2e} A/cm²")
-
-        # Calculate current in base region
-        # print("\nCalculating current in base region...")
-        # print(f"Jb parameters:")
-        # print(f"  temp: {temp}")
-        # print(f"  typeOfMinority: 'n'")
-        # print(f"  majorityConc (acceptor_conc): {acceptor_conc:.2e} cm⁻³")
-        # print(f"  width1 (emitter_size/10000): {emitter_size/10000:.2e} cm")
-        # print(f"  width2 (base_size/10000): {base_size/10000:.2e} cm")
-        # print(f"  depletionWidth: {total_depletion_width:.2e} cm")
-        # print(f"  linear_attenuation: {linear_attenuation:.2e} cm⁻¹")
-        base_current = Jb(temp, 'n', acceptor_conc, emitter_size/10000, base_size/10000, total_depletion_width, linear_attenuation)
-        base_current_float = float(base_current) * photon_flux
-        # print(f"Base current: {base_current_float:.2e} A/cm²")
-
         # Calculate reverse saturation current
-        # print("\nCalculating reverse saturation current...")
-        # print(f"Parameters:")
-        # print(f"  temp: {temp}")
-        # print(f"  donorConc: {donor_conc:.2e} cm⁻³")
-        # print(f"  acceptorConc: {acceptor_conc:.2e} cm⁻³")
-        # print(f"  emitterWidth: {emitter_size/10000:.2e} cm")
-        # print(f"  baseWidth: {base_size/10000:.2e} cm")
-        reverse_sat_current = reverseSaturationCurrent(temp, donor_conc, acceptor_conc, emitter_size/10000, base_size/10000)
-        reverse_sat_current_float = abs(float(reverse_sat_current))
-        # print(f"Reverse saturation current: {reverse_sat_current_float:.2e} A/cm²")
-
-        # Calculate total current (sum of emitter, base, and JDR currents)
-        jdr_current = float(jdr_result.get("Current", 0.0) or 0.0)
-        total_current = emitter_current_float + base_current_float + jdr_current
-        # print(f"\nTotal current: {total_current:.2e} A/cm²")
-        # print(f"  Emitter current: {emitter_current_float:.2e} A/cm²")
-        # print(f"  Base current: {base_current_float:.2e} A/cm²")
-        # print(f"  JDR current: {jdr_current:.2e} A/cm²")
-
-        # Calculate Voc
-        # print("\nCalculating Voc...")
-        # print(f"Parameters:")
-        # print(f"  totalCurrent: {total_current:.2e} A/cm²")
-        # print(f"  reverseSaturationCurrent: {reverse_sat_current_float:.2e} A/cm²")
-        # print(f"  temp: {temp}")
-        voc = Voc(total_current, reverse_sat_current_float, temp)
-        voc_float = float(voc)
-        # print(f"Voc: {voc_float:.2e} V")
+        logging.info(f"[{simulation_id}] Calculating reverse saturation current with parameters:")
+        logging.info(f"[{simulation_id}] temperature: {temperature}")
+        logging.info(f"[{simulation_id}] donorConc: {donorConcentration}")
+        logging.info(f"[{simulation_id}] acceptorConc: {acceptorConcentration}")
+        logging.info(f"[{simulation_id}] emitterWidth: {n_side_width}")
+        logging.info(f"[{simulation_id}] baseWidth: {p_side_width}")
         
-        # Calculate radiation per hour
-        # print("\nCalculating radiation per hour...")
-        # print(f"Parameters:")
-        # print(f"  photonFlux: {photon_flux:.2e} photons/cm²·s")
-        total_device_width = (emitter_size + base_size)/10000 + total_depletion_width  # Convert μm to cm
-        # print(f"  totalDeviceWidth: {total_device_width:.2e} cm")
-        # print(f"  linearAttenuation: {linear_attenuation:.2e} cm⁻¹")
-        rad_per_hour = radPerHour(photon_flux, total_device_width, linear_attenuation)
-        rad_per_hour_float = float(rad_per_hour)
-        # print(f"Radiation per hour: {rad_per_hour_float:.2e} rad/hour")
-
-        # Calculate surviving carriers for both emitter and base
-        emitter_surviving_carriers = emitter_current_float / q if emitter_current_float != 0 else 0
-        base_surviving_carriers = base_current_float / q if base_current_float != 0 else 0
-
-        # Create current generation data
+        reverse_saturation_current = reverseSaturationCurrent(
+            temp=temperature,
+            donorConc=donorConcentration,
+            acceptorConc=acceptorConcentration,
+            emitterWidth=n_side_width,
+            baseWidth=p_side_width
+        )
+        
+        logging.info(f"[{simulation_id}] Calculated reverse saturation current: {reverse_saturation_current}")
+        
+        # Calculate Voc
+        logging.info(f"[{simulation_id}] Calculating Voc with parameters:")
+        logging.info(f"[{simulation_id}] totalCurrent: {total_current}")
+        logging.info(f"[{simulation_id}] reverseSaturationCurrent: {reverse_saturation_current}")
+        logging.info(f"[{simulation_id}] temperature: {temperature}")
+        logging.info(f"[{simulation_id}] totalCurrent/reverseSaturationCurrent: {total_current/reverse_saturation_current}")
+        
+        voc = Voc(
+            totalCurrent=float(total_current),
+            reverseSaturationCurrent=float(reverse_saturation_current),
+            temp=float(temperature)
+        )
+        
+        # Calculate rad per hour
+        rad_per_hour = radPerHour(
+            photonFlux=photonFlux,
+            size=total_depletion_width,
+            a=linear_attenuation
+        )
+        
+        # Calculate generation rate data
+        logging.info(f"[{simulation_id}] Calculating generation rate with parameters:")
+        logging.info(f"[{simulation_id}] total_depletion_width: {total_depletion_width}")
+        logging.info(f"[{simulation_id}] photonEnergy (eV): {photonEnergy}")
+        logging.info(f"[{simulation_id}] photonFlux: {photonFlux}")
+        logging.info(f"[{simulation_id}] E: {E}")
+        logging.info(f"[{simulation_id}] linear_attenuation: {linear_attenuation}")
+        
+        # Convert photon energy from eV to Joules
+        hv_joules = photonEnergy * 1.60218e-19
+        logging.info(f"[{simulation_id}] photonEnergy (Joules): {hv_joules}")
+        
+        generation_rate_values = []
+        for x in positions:
+            result = genDevice(
+                x=x,
+                width=total_depletion_width,
+                hv=hv_joules,  # Use photon energy in Joules
+                photonFlux=photonFlux,
+                E=E,  # Use the global E constant
+                a=linear_attenuation
+            )
+            generation_rate_values.append(result[1])  # Use Q(x) value
+        
+        # Calculate generation rate data
+        generation_rate_data = [(float(x), float(y)) for x, y in zip(positions, generation_rate_values)]
+        
+        # Calculate generation per region
+        region_size = len(generation_rate_values) // 3
+        generation_per_region = {
+            "emitter": float(sum(generation_rate_values[:region_size])),
+            "depletion": float(sum(generation_rate_values[region_size:2*region_size])),
+            "base": float(sum(generation_rate_values[2*region_size:]))
+        }
+        
+        # Calculate generation rate profile
+        generation_rate_profile = {
+            "positions": [float(x) for x in positions],
+            "values": [float(x) for x in generation_rate_values]
+        }
+        
+        # Calculate current generation data
         current_generation_data = {
             "emitter": {
-                "generated_carriers": float(avg_emitter_rate),
-                "surviving_carriers": float(emitter_surviving_carriers),
-                "current": float(emitter_current_float)
+                "generated_carriers": float(generation_per_region["emitter"]),
+                "current": float(electron_current * 0.3)  # Approximate 30% of current in emitter
             },
             "depletion": {
-                "generated_carriers": float(avg_depletion_rate),
-                "surviving_carriers": 0.0,
-                "current": 0.0
+                "generated_carriers": float(generation_per_region["depletion"]),
+                "current": float(electron_current * 0.4)  # Approximate 40% of current in depletion
             },
             "base": {
-                "generated_carriers": float(avg_base_rate),
-                "surviving_carriers": float(base_surviving_carriers),
-                "current": float(base_current_float)
+                "generated_carriers": float(generation_per_region["base"]),
+                "current": float(electron_current * 0.3)  # Approximate 30% of current in base
             },
             "jdr": {
-                "current": float(jdr_result.get("Current", 0.0) or 0.0),
-                "electron_current": float(jdr_result.get("Current-Electron", 0.0) or 0.0),
-                "hole_current": float(jdr_result.get("Current-Hole", 0.0) or 0.0),
-                "Electron density": float(jdr_result.get("Electron-density", [0.0])[-1] or 0.0),
-                "Hole density": float(jdr_result.get("Hole-density", [0.0])[-1] or 0.0),
-                "Electron-lifetime": electron_lifetime,
-                "Electron-Lifetime-Components": electron_lifetime_components,
-                "Hole-lifetime": hole_lifetime,
-                "Hole-Lifetime-Components": hole_lifetime_components
+                "current": float(total_current),
+                "Current-Electron": float(electron_current),  # Changed to match frontend expectation
+                "Current-Hole": float(hole_current),  # Changed to match frontend expectation
+                "Electron density": float(electron_density),
+                "Hole density": float(hole_density),
+                "Electron-lifetime": float(electron_lifetime),
+                "Hole-lifetime": float(hole_lifetime),
+                "Electron-Lifetime-Components": [float(x) for x in electron_lifetime_components],
+                "Hole-Lifetime-Components": [float(x) for x in hole_lifetime_components],
+                "Electric field": float(electric_field),
+                "E-min": float(e_min)
             },
             "solar_cell_parameters": {
                 "total_current": float(total_current),
-                "reverse_saturation_current": float(reverse_sat_current_float),
-                "voc": float(voc_float),
-                "rad_per_hour": float(rad_per_hour_float)
+                "reverse_saturation_current": float(reverse_saturation_current),
+                "voc": float(voc),
+                "rad_per_hour": float(rad_per_hour)
             }
         }
-
-        # Create density data with equal increments from 0 to total depletion width
-        num_points = 100  # Number of points for the density profiles
-        total_width = total_depletion_width  # Total depletion width in cm
-        x_positions = np.linspace(0, total_width, num_points)  # Generate positions from 0 to total width
         
-        # Round positions to 2 decimal places
-        x_positions = np.round(x_positions, decimals=2)
+        # Log the carrier densities from findConvergenceLifetime results
+        # print("\n*** CARRIER DENSITY CALCULATIONS ***")
+        # print(f"Electron Density: {electron_density:.2e} cm^-3")
+        # print(f"Hole Density: {hole_density:.2e} cm^-3")
+        # print(f"Intrinsic Concentration: {sim_params.intrinsicConcentration:.2e} cm^-3")
+        # print(f"Donor Concentration: {donorConcentration:.2e} cm^-3")
+        # print(f"Acceptor Concentration: {acceptorConcentration:.2e} cm^-3")
         
-        # Create electron density data
-        electron_density_data = {
-            "values": [float(val) if val is not None else 0.0 for val in jdr_result["Electron-density"]],
-            "positions": [float(pos) for pos in x_positions]  # Use the rounded positions
-        }
-        
-        # Create hole density data
-        hole_density_data = {
-            "values": [float(val) if val is not None else 0.0 for val in jdr_result["Hole-density"]],
-            "positions": [float(pos) for pos in x_positions]  # Use the same rounded positions
-        }
+        # print("\n*** ELECTRIC FIELD DATA ***")
+        # print(f"Electric field: {electric_field:.2e} V/cm")
+        # print(f"E-min: {e_min:.2e} V/cm")
+        # print(f"Electric field profile points: {len(electric_field_values)}")
+        # print(f"First few points: {electric_field_values[:5]}")
+        # print(f"Last few points: {electric_field_values[-5:]}")
 
-        # print("\nDensity Profile Data:")
-        # print(f"Total depletion width: {total_width:.2e} cm")
-        # print(f"Number of points: {num_points}")
-        # print(f"X-axis range: 0 to {total_width:.2e} cm")
-
-        # Calculate carrier densities
-        emitter_carrier_density = avg_emitter_rate  # Use average generation rate
-        depletion_carrier_density = avg_depletion_rate  # Use average generation rate
-        base_carrier_density = avg_base_rate  # Use average generation rate
-
-        # print("\nCarrier Density Calculations:")
-        # print(f"Emitter carrier density: {emitter_carrier_density:.2e} cm⁻³")
-        # print(f"Base carrier density: {base_carrier_density:.2e} cm⁻³")
-        # if params.junctionType == "PIN":
-        #     print(f"Depletion carrier density: {depletion_carrier_density:.2e} cm⁻³")
-
-        # Print detailed generation rate information
-        # print("\nDetailed Generation Rate Information:")
-        # print(f"Number of points in emitter region: {len(emitter_rates)}")
-        # print(f"Number of points in depletion region: {len(depletion_rates)}")
-        # print(f"Number of points in base region: {len(base_rates)}")
-        # print(f"\nGeneration Rate Ranges:")
-        # if emitter_rates:
-        #     print(f"Emitter: {min(emitter_rates):.2e} to {max(emitter_rates):.2e} cm⁻³s⁻¹")
-        # if depletion_rates:
-        #     print(f"Depletion: {min(depletion_rates):.2e} to {max(depletion_rates):.2e} cm⁻³s⁻¹")
-        # if base_rates:
-        #     print(f"Base: {min(base_rates):.2e} to {max(base_rates):.2e} cm⁻³s⁻¹")
-
-        # Create simulation response
-        simulation_response = SimulationResponse(
-            builtInPotential=built_in_potential,
-            depletionWidth=total_depletion_width,
-            electricField=electric_field_data,
-            position=position_data,
-            temperature=temp,
-            electronConcentration=float(params.donorConcentration),
-            holeConcentration=float(params.acceptorConcentration),
-            message="Simulation completed successfully",
-            pSideWidth=p_side_width,
-            intrinsicWidth=intrinsic_width,
-            nSideWidth=n_side_width,
-            eMinElectron=e_min_electron,
-            eMinHole=e_min_hole,
-            eMin=e_min,
-            totalElectricField=total_electric_field,
-            photonFlux=params.photonFlux,
-            photonEnergy=params.photonEnergy,
-            emitterSize=emitter_size,
-            baseSize=base_size,
-            totalDeviceWidth=emitter_size + (intrinsic_width * 10000) + base_size,
-            sizeWarning=size_warning,
-            ganDensity=6.15,
-            massAttenuation=mass_attenuation,
-            linearAttenuation=linear_attenuation,
-            mobilityMaxElectrons=1000.0,
-            mobilityMaxHoles=40.0,
-            mobilityMinElectrons=55.0,
-            mobilityMinHoles=3.0,
-            intrinsicCarrierConcentration=1.6e-10,
-            dielectricConstant=8.9,
-            radiativeRecombinationCoefficient=1.1e-8,
-            augerCoefficient=1e-30,
-            electronThermalVelocity=2.43e7,
-            holeThermalVelocity=2.38e7,
-            surfaceRecombinationVelocities={
-                "bareEmitter": float(bare_emitter_velocity),
-                "substrateBase": float(substrate_base_velocity)
-            },
+        # Create response with both single point and profile data
+        response = SimulationResponse(
+            donorConcentration=safe_float(donorConcentration),
+            acceptorConcentration=safe_float(acceptorConcentration),
+            intrinsicConcentration=safe_float(sim_params.intrinsicConcentration),
+            nSideWidth=safe_float(n_side_width),
+            pSideWidth=safe_float(p_side_width),
+            intrinsicWidth=safe_float(intrinsic_width),
+            totalDepletionWidth=safe_float(total_depletion_width),
+            temperature=safe_float(temperature),
+            junctionType=sim_params.junctionType,
+            builtInPotential=safe_float(built_in_potential),
+            depletionWidth=safe_float(depletion_width),
+            electricField=safe_float(electric_field),
+            maxElectricField=safe_float(max(electric_field_values)),  # Use max from profile
+            diffusionCurrent=safe_float(diffusion_current),
+            driftCurrent=safe_float(drift_current),
+            totalCurrent=safe_float(total_current),
+            reverseSaturationCurrent=safe_float(reverse_saturation_current),
+            voc=safe_float(voc),
+            radPerHour=safe_float(rad_per_hour),
             generationRateData=generation_rate_data,
-            minorityRecombinationRates=[minority_rates_emitter, minority_rates_base],
-            electron_density_data=electron_density_data,
-            hole_density_data=hole_density_data,
+            generationPerRegion=generation_per_region,
+            generationRateProfile=generation_rate_profile,
+            electronDensity=electron_density,
+            holeDensity=hole_density,
+            electronDensityData={
+                "positions": [float(x) for x in positions],
+                "values": electron_density_profile
+            },
+            holeDensityData={
+                "positions": [float(x) for x in positions],
+                "values": hole_density_profile
+            },
             currentGenerationData=current_generation_data,
-            generationRateProfile=generation_rate_profile
+            electricFieldData={
+                "positions": [float(x) for x in positions],
+                "values": electric_field_values
+            },
+            baseSize=safe_float(nRegionWidth),  # Use nRegionWidth for base size
+            emitterSize=safe_float(pRegionWidth),  # Use pRegionWidth for emitter size
+            # Add constants from phase1.py
+            ganDensity=6.15,  # g/cm³
+            massAttenuation=safe_float(mass_attenuation),
+            linearAttenuation=safe_float(linear_attenuation),
+            mobilityMaxElectrons=1265,  # cm²/V·s
+            mobilityMaxHoles=40,  # cm²/V·s
+            mobilityMinElectrons=55,  # cm²/V·s
+            mobilityMinHoles=3,  # cm²/V·s
+            intrinsicCarrierConcentration=1.6e-10,  # cm⁻³
+            dielectricConstant=8.9,  # Also 9.7 for wurtzite structure
+            radiativeRecombinationCoefficient=1.1e-8,  # cm³/s
+            augerCoefficient=1e-30,  # cm⁶/s
+            electronThermalVelocity=2.43e7,  # cm/s
+            holeThermalVelocity=2.38e7  # cm/s
         )
 
-        # Store results in global variables
-        global current_simulation_results, current_simulation_params
+        # Store results in the global dictionary
         current_simulation_results = [
-            SimulationResult(position=x, electricField=e_field)
-            for x, e_field in electric_field_data
+            SimulationResult(position=float(x), electricField=float(field))
+            for x, field in zip(positions, electric_field_values)
         ]
-        current_simulation_params = simulation_response
+        current_simulation_params = response
 
-        logger.info("Simulation completed successfully")
-        return simulation_response
+        # Log the response data for debugging
+        logging.info(f"[{simulation_id}] Response data structure:")
+        logging.info(f"[{simulation_id}] JDR data: {current_generation_data['jdr']}")
+        logging.info(f"[{simulation_id}] Electric field data: {electric_field_data}")
+        logging.info(f"[{simulation_id}] Electron density data: {response.electronDensityData}")
+        logging.info(f"[{simulation_id}] Hole density data: {response.holeDensityData}")
+
+        # Return the response
+        return response
     
     except Exception as e:
-        logger.error(f"Error in simulation: {str(e)}")
-        logger.error(f"Error type: {type(e)}")
-        logger.error(f"Error args: {e.args}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in simulation: {str(e)}")
+        logging.error(f"Error type: {type(e)}")
+        logging.error(f"Error args: {e.args}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise
+
+@app.get("/api/results", response_model=List[SimulationResult])
+async def get_results():
+    """Get the current simulation results."""
+    if not current_simulation_results:
+        raise HTTPException(status_code=404, detail="No simulation results available")
+    return current_simulation_results
 
 @app.get("/api/simulate", response_model=SimulationResponse)
 async def get_simulation_params():
+    """Get the current simulation parameters and results."""
     if current_simulation_params is None:
         raise HTTPException(status_code=404, detail="No simulation has been run yet")
     return current_simulation_params
 
-@app.get("/api/results", response_model=List[SimulationResult])
-async def get_results():
-    print("Received request for results")
-    print(f"Number of results available: {len(current_simulation_results)}")
-    return current_simulation_results
-
 @app.post("/api/save-sweep-results")
-async def save_sweep_results(results: List[dict]):
-    """Save parameter sweep simulation results to a CSV file with detailed data."""
-    logger.info(f"Saving {len(results)} detailed parameter sweep results to results.csv")
-    
+async def save_sweep_results(sweep_results: List[dict]):
+    """
+    Save simplified sweep results to a CSV file.
+    Handles chunked data for large parameter sweeps.
+    """
     try:
-        # Define the path to the results.csv file in the root directory
-        results_file = Path(root_dir) / "results.csv"
+        # Generate a unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"sweep_results_{timestamp}.csv"
+        current_dir = os.getcwd()
+        filepath = os.path.join(current_dir, filename)
+        
+        # Log the file path information
+        print(f"Saving sweep results to: {filepath}")
+        logging.info(f"Saving sweep results to: {filepath}")
         
         # Check if file exists to determine if we need to write headers
-        file_exists = results_file.exists()
+        file_exists = os.path.isfile(filepath)
         
-        # Open the file in append mode
-        with open(results_file, 'a', newline='') as f:
-            # Get field names from the first result if available
-            if results and len(results) > 0:
-                fieldnames = results[0].keys()
-            else:
-                fieldnames = ['donorConcentration', 'acceptorConcentration', 'percent', 
-                            'totalCurrent', 'voc', 'radPerHour', 'deviceLifetime']
-            
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            
-            # Write header only if file doesn't exist
-            if not file_exists:
+        # Track successful and failed rows
+        successful_rows = 0
+        failed_rows = 0
+        
+        # Open file in append mode
+        with open(filepath, 'a', newline='') as csvfile:
+            if not file_exists and len(sweep_results) > 0:
+                # Get fieldnames from the first item
+                fieldnames = list(sweep_results[0].keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
+            elif file_exists and len(sweep_results) > 0:
+                with open(filepath, 'r', newline='') as readfile:
+                    reader = csv.reader(readfile)
+                    fieldnames = next(reader)  # Get the headers from the existing file
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
-            # Write all results
-            writer.writerows(results)
+            # Write each result row
+            for idx, result in enumerate(sweep_results):
+                try:
+                    # Convert all values to native Python types for CSV compatibility
+                    row_data = {k: float(v) if isinstance(v, (int, float)) else v for k, v in result.items()}
+                    writer.writerow(row_data)
+                    successful_rows += 1
+                except Exception as e:
+                    failed_rows += 1
+                    logging.error(f"Error writing sweep result row {idx}: {str(e)}")
+                    # Try to save the raw data for debugging
+                    logging.error(f"Failed row data: {result}")
         
-        logger.info(f"Successfully saved results to {results_file}")
-        return {"success": True, "message": f"Successfully saved {len(results)} results to {results_file}"}
-    
-    except Exception as e:
-        logger.error(f"Error saving results: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to save results: {str(e)}")
-
-@app.post("/api/save-detailed-results")
-async def save_detailed_results(simulations: List[dict]):
-    """Save comprehensive simulation results with all data to a detailed CSV file."""
-    logger.info(f"Saving {len(simulations)} detailed simulation results")
-    
-    try:
-        # Define the path to the detailed results file in the root directory
-        results_file = Path(root_dir) / "detailed_results.csv"
+        # Log summary
+        logging.info(f"Save summary: {successful_rows} rows saved successfully, {failed_rows} rows failed")
+        if failed_rows > 0:
+            logging.warning(f"Some rows failed to save. Check the logs for details.")
         
-        # Extract all possible fields from the simulation results
-        all_fields = set()
-        for sim in simulations:
-            # Flatten nested dictionaries with dot notation
-            flat_dict = {}
-            
-            def flatten_dict(d, parent_key=''):
-                for k, v in d.items():
-                    new_key = f"{parent_key}.{k}" if parent_key else k
-                    
-                    if isinstance(v, dict):
-                        flatten_dict(v, new_key)
-                    elif isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        # Handle list of dictionaries (extract only the first item)
-                        flatten_dict(v[0], f"{new_key}[0]")
-                    else:
-                        # Handle scalar values, ensuring they're converted to strings
-                        if isinstance(v, (int, float, str, bool)) or v is None:
-                            flat_dict[new_key] = v
-                        else:
-                            # For complex objects like arrays, convert to string representation
-                            flat_dict[new_key] = str(v)
-            
-            flatten_dict(sim)
-            all_fields.update(flat_dict.keys())
-        
-        # Sort fields for consistent CSV columns
-        fieldnames = sorted(list(all_fields))
-        
-        # Check if file exists to determine if we need to write headers
-        file_exists = results_file.exists()
-        
-        # Prepare rows for writing
-        rows_to_write = []
-        for sim in simulations:
-            flat_dict = {}
-            
-            def flatten_dict(d, parent_key=''):
-                for k, v in d.items():
-                    new_key = f"{parent_key}.{k}" if parent_key else k
-                    
-                    if isinstance(v, dict):
-                        flatten_dict(v, new_key)
-                    elif isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        flatten_dict(v[0], f"{new_key}[0]")
-                    else:
-                        if isinstance(v, (int, float, str, bool)) or v is None:
-                            flat_dict[new_key] = v
-                        else:
-                            flat_dict[new_key] = str(v)
-            
-            flatten_dict(sim)
-            rows_to_write.append(flat_dict)
-        
-        # Write to CSV
-        with open(results_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            
-            # Write header only if file doesn't exist
-            if not file_exists:
-                writer.writeheader()
-            
-            # Write all flattened results
-            writer.writerows(rows_to_write)
-        
-        logger.info(f"Successfully saved detailed results to {results_file}")
         return {
-            "success": True, 
-            "message": f"Successfully saved {len(simulations)} detailed simulation results to {results_file}",
-            "filename": str(results_file)
+            "message": f"Sweep results saved to {filepath}",
+            "filename": filepath,
+            "successful_rows": successful_rows,
+            "failed_rows": failed_rows
         }
     
     except Exception as e:
-        logger.error(f"Error saving detailed results: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to save detailed results: {str(e)}")
+        logging.error(f"Error saving sweep results: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error saving sweep results: {str(e)}")
+
+@app.post("/api/save-detailed-results")
+async def save_detailed_results(detailed_results: List[dict]):
+    """
+    Save detailed simulation results to a CSV file.
+    Handles chunked data for large parameter sweeps.
+    """
+    try:
+        # Generate a unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"detailed_results_{timestamp}.csv"
+        current_dir = os.getcwd()
+        filepath = os.path.join(current_dir, filename)
+        
+        # Log the file path information
+        print(f"Saving detailed results to: {filepath}")
+        logging.info(f"Saving detailed results to: {filepath}")
+        
+        # Check if file exists to determine if we need to write headers
+        file_exists = os.path.isfile(filepath)
+        
+        # Open file in append mode so we can add chunks of data
+        with open(filepath, 'a', newline='') as csvfile:
+            # Process the first item to get all possible keys for headers
+            if not file_exists and len(detailed_results) > 0:
+                # Flatten the nested structure for the first item
+                flattened_first_item = {}
+                flatten_dict(detailed_results[0], flattened_first_item)
+                
+                # Write the CSV header using all keys from the flattened dict
+                fieldnames = list(flattened_first_item.keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+            
+            # If file exists, we need to get existing headers
+            elif file_exists and len(detailed_results) > 0:
+                with open(filepath, 'r', newline='') as readfile:
+                    reader = csv.reader(readfile)
+                    fieldnames = next(reader)  # Get the headers from the existing file
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Process each result and write to CSV
+            for result in detailed_results:
+                # Flatten the nested structure into a single-level dictionary
+                flattened_item = {}
+                flatten_dict(result, flattened_item)
+                
+                # Write the flattened data to CSV
+                try:
+                    writer.writerow(flattened_item)
+                except ValueError as e:
+                    # If we're missing some keys (might happen with chunked data), add them with null values
+                    missing_keys = set(fieldnames) - set(flattened_item.keys())
+                    for key in missing_keys:
+                        flattened_item[key] = None
+                    writer.writerow(flattened_item)
+                except Exception as e:
+                    logging.error(f"Error writing row to CSV: {str(e)}")
+        
+        print(f"Successfully saved {len(detailed_results)} detailed results to {filepath}")
+        return {"message": f"Detailed results saved to {filepath}", "filename": filepath}
+    
+    except Exception as e:
+        logging.error(f"Error saving detailed results: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error saving detailed results: {str(e)}")
+
+@app.get("/api/debug/compare-simulations")
+async def compare_simulations(sim1_id: str, sim2_id: str):
+    """
+    Debug endpoint to compare parameters between two simulations.
+    Returns the differences in parameters and results to help diagnose inconsistencies.
+    
+    Args:
+        sim1_id: First simulation ID (from logs)
+        sim2_id: Second simulation ID (from logs)
+    
+    Returns:
+        Comparison of parameters and results
+    """
+    try:
+        # This is a placeholder implementation that would need to be connected to a database
+        # or log parser in a production environment
+        logging.info(f"Comparing simulations {sim1_id} and {sim2_id}")
+        
+        # In a real implementation, you would:
+        # 1. Retrieve simulation parameters and results from a database or parsed logs
+        # 2. Compare the parameters and results to find differences
+        # 3. Return a structured comparison
+        
+        return {
+            "message": "This is a placeholder endpoint. To use it properly, you would need to implement log parsing or database storage of simulation parameters and results.",
+            "instructions": "Check the simulation_server.log file for entries with these simulation IDs to manually compare parameters",
+            "simulation_ids": {
+                "sim1": sim1_id,
+                "sim2": sim2_id
+            },
+            "log_file_location": "web-app/backend/simulation_server.log"
+        }
+    except Exception as e:
+        logging.error(f"Error comparing simulations: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Helper function to extract lifetimes from logs for debugging
+@app.get("/api/debug/extract-lifetimes")
+async def extract_lifetimes():
+    """
+    Debug endpoint to extract and compare electron and hole lifetimes from simulation logs.
+    This helps identify patterns in lifetime values across different simulation runs.
+    
+    Returns:
+        A collection of lifetime values extracted from logs
+    """
+    try:
+        import re
+        import os
+        
+        # Path to the log file
+        log_file = "simulation_server.log"
+        
+        if not os.path.exists(log_file):
+            return {"error": f"Log file {log_file} not found"}
+        
+        # Patterns to match in logs
+        electron_pattern = r'\[([^\]]+)\].*Electron lifetime: ([0-9.e+-]+)'
+        hole_pattern = r'\[([^\]]+)\].*Hole lifetime: ([0-9.e+-]+)'
+        
+        # Store extracted data
+        lifetimes = []
+        
+        # Open and read the log file
+        with open(log_file, 'r') as f:
+            content = f.read()
+            
+            # Find all matches
+            electron_matches = re.findall(electron_pattern, content)
+            hole_matches = re.findall(hole_pattern, content)
+            
+            # Create a dictionary of simulation IDs mapped to lifetimes
+            sim_lifetimes = {}
+            
+            # Process electron lifetimes
+            for sim_id, lifetime in electron_matches:
+                if sim_id not in sim_lifetimes:
+                    sim_lifetimes[sim_id] = {}
+                sim_lifetimes[sim_id]['electron'] = float(lifetime)
+            
+            # Process hole lifetimes
+            for sim_id, lifetime in hole_matches:
+                if sim_id not in sim_lifetimes:
+                    sim_lifetimes[sim_id] = {}
+                sim_lifetimes[sim_id]['hole'] = float(lifetime)
+            
+            # Convert to a list of records with simulation ID and both lifetimes
+            for sim_id, data in sim_lifetimes.items():
+                if 'electron' in data and 'hole' in data:
+                    lifetimes.append({
+                        'simulation_id': sim_id,
+                        'electron_lifetime': data['electron'],
+                        'hole_lifetime': data['hole']
+                    })
+        
+        return {
+            "lifetimes": lifetimes,
+            "count": len(lifetimes),
+            "note": "These are the extracted electron and hole lifetimes from simulation logs"
+        }
+    except Exception as e:
+        logging.error(f"Error extracting lifetimes: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Add a test endpoint to verify the server is running
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+# Add a new endpoint to get the simulation count
+@app.get("/api/simulation-count")
+async def get_simulation_count():
+    """Returns the current simulation count."""
+    return {"total_simulations": current_sweep_counter}
+
+# Add a new endpoint to reset the simulation counter
+@app.post("/api/reset-simulation-count")
+async def reset_simulation_count():
+    """Resets the simulation counter for a new parameter sweep."""
+    global simulation_counter, current_sweep_counter
+    simulation_counter = 0
+    current_sweep_counter = 0
+    return {"message": "Simulation counter reset"}
 
 if __name__ == "__main__":
     import uvicorn

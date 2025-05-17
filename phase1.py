@@ -404,7 +404,7 @@ def Jb(temp, typeOfMinority, majorityConc, width1, width2, depletionWidth, a):
     return finalVal
 
 def reverseSaturationCurrent(temp, donorConc, acceptorConc, emitterWidth, baseWidth):
-    q = q = 1.6e-19
+    q = 1.6e-19
     intrinsicConc = 1.6e-10
     nA = acceptorConc
     nD = donorConc
@@ -412,21 +412,21 @@ def reverseSaturationCurrent(temp, donorConc, acceptorConc, emitterWidth, baseWi
     #For p-type region:
     ln = totalMinorityLength(temp, 'n', nA, emitterWidth)
     minority = (1.6e-10**2)/nA
-    dn= diffusionConstants(temp, mobility('n',(nA),temp))
+    dn = diffusionConstants(temp, mobility('n', nA, temp))
     sn = surfaceVelocityInterface(dn, emitterWidth)
 
     #For n-type region:
     lp = totalMinorityLength(temp, 'p', nD, baseWidth)
     minority = (1.6e-10**2)/nD
-    dp= diffusionConstants(temp, mobility('p',(nD),temp))
-    sp = surfaceVelocityInterface(dn, baseWidth)
+    dp = diffusionConstants(temp, mobility('p', nD, temp))
+    sp = surfaceVelocityInterface(dp, baseWidth)
 
     #Calculations
     val1 = (q*dn*(intrinsicConc**2))/(ln*nA)
-    val2 = ((((sn*ln)/dn)*mp.cosh(emitterSize/ln))+mp.sinh(emitterSize/ln))/((((sn*ln)/dn)*mp.sinh(emitterSize/ln))+mp.cosh(emitterSize/ln))
+    val2 = ((((sn*ln)/dn)*np.cosh(emitterWidth/ln))+np.sinh(emitterWidth/ln))/((((sn*ln)/dn)*np.sinh(emitterWidth/ln))+np.cosh(emitterWidth/ln))
 
     val3 = (q*dp*(intrinsicConc**2))/(lp*nD)
-    val4 = ((((sp*lp)/dp)*mp.cosh(baseSize/lp))+mp.sinh(baseSize/lp))/((((sp*lp)/dp)*mp.sinh(baseSize/lp))+mp.cosh(baseSize/lp))
+    val4 = ((((sp*lp)/dp)*np.cosh(baseWidth/lp))+np.sinh(baseWidth/lp))/((((sp*lp)/dp)*np.sinh(baseWidth/lp))+np.cosh(baseWidth/lp))
 
     finalVal = (val1*val2)+(val3*val4)
 
@@ -525,8 +525,6 @@ print(rC)
 #                     finalVal=photonFlux*(je+jdr[0]+jb)*(size**2)
 #                     rC = reverseSaturationCurrent(300, nDope, pDope, (emitterSize-(jdr[1]/2)), (baseSize-(jdr[1]/2)))
 #                     voltage = Voc(finalVal, rC, 300)
-#                 #Finding degradation
-#                     radPerHour = ((photonFlux*(1-mp.exp(-a*(emitterSize+baseSize)))*hv*(size**2))/(6.15*(emitterSize+baseSize)/1000))*36
                
 #                     top_10_manager.add_list([finalVal, rC,voltage, jdr[1], emitterSize,baseSize,pDope,nDope,je,jdr,jb,radPerHour])
             

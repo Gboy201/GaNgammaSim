@@ -37,7 +37,101 @@ interface SimulationParams {
 
 interface SimulationResponse {
   builtInPotential: number;
+  depletionWidth: number;
+  electricField: Array<[number, number]>;
+  position: Array<number>;
+  temperature: number;
+  electronConcentration: number;
+  holeConcentration: number;
   message: string;
+  pSideWidth: number;
+  intrinsicWidth: number;
+  nSideWidth: number;
+  eMinElectron: number;
+  eMinHole: number;
+  eMin: number;
+  totalElectricField: number;
+  photonFlux: number;
+  photonEnergy: number;
+  emitterSize: number;
+  baseSize: number;
+  totalDeviceWidth: number;
+  sizeWarning?: string;
+  ganDensity: number;
+  massAttenuation: number;
+  linearAttenuation: number;
+  mobilityMaxElectrons: number;
+  mobilityMaxHoles: number;
+  mobilityMinElectrons: number;
+  mobilityMinHoles: number;
+  intrinsicCarrierConcentration: number;
+  dielectricConstant: number;
+  radiativeRecombinationCoefficient: number;
+  augerCoefficient: number;
+  electronThermalVelocity: number;
+  holeThermalVelocity: number;
+  surfaceRecombinationVelocities: {
+    bareEmitter: number;
+    substrateBase: number;
+  };
+  minorityRecombinationRates: Array<{
+    region: string;
+    auger: number;
+    srh: number;
+    radiative: number;
+    bulk: number;
+  }>;
+  generationRateData: Array<[number, number]>;
+  generationPerRegion: {
+    emitter: number;
+    depletion: number;
+    base: number;
+  };
+  generationRateProfile: {
+    positions: number[];
+    values: number[];
+  };
+  currentGenerationData: {
+    emitter: {
+      generated_carriers: number;
+      current: number;
+    };
+    depletion: {
+      generated_carriers: number;
+      current: number;
+    };
+    base: {
+      generated_carriers: number;
+      current: number;
+    };
+    jdr: {
+      current: number;
+      electron_current: number;
+      hole_current: number;
+      "Electron density": number;
+      "Hole density": number;
+      "Electron-lifetime": number;
+      "Electron-Lifetime-Components": number[];
+      "Hole-lifetime": number;
+      "Hole-Lifetime-Components": number[];
+      [key: string]: any;
+    };
+    solar_cell_parameters: {
+      total_current: number;
+      reverse_saturation_current: number;
+      voc: number;
+      rad_per_hour: number;
+    };
+  };
+  electron_density_data: {
+    positions: number[];
+    values: number[];
+  };
+  hole_density_data: {
+    positions: number[];
+    values: number[];
+  };
+  [key: string]: any; // Allow other properties
 }
 
 interface SimulationResult {
@@ -74,13 +168,88 @@ const SimulationForm: React.FC = () => {
 
   const mutation = useMutation<SimulationResponse, Error, SimulationParams>({
     mutationFn: async (formData: SimulationParams) => {
-      console.log("Starting simulation with data:", formData);
-      const response = await axios.post<SimulationResponse>(
-        "http://localhost:8000/api/simulate",
-        formData
+      // Create a unique identifier for logging
+      const runId = `single-${formData.donorConcentration}-${formData.acceptorConcentration}`;
+
+      // Ensure all numeric parameters have the correct type
+      const formattedParams = {
+        temperature: Number(formData.temperature),
+        donorConcentration: Number(formData.donorConcentration),
+        acceptorConcentration: Number(formData.acceptorConcentration),
+        nRegionWidth: Number(formData.nRegionWidth),
+        pRegionWidth: Number(formData.pRegionWidth),
+        photonEnergy: Number(formData.photonEnergy),
+        photonFlux: Number(formData.photonFlux),
+        percent:
+          formData.percent !== undefined ? Number(formData.percent) : undefined,
+        intrinsicConcentration:
+          formData.intrinsicConcentration !== undefined
+            ? Number(formData.intrinsicConcentration)
+            : undefined,
+        junctionType: formData.junctionType,
+      };
+
+      // Log the exact parameters being sent in a format that can be compared with backend logs
+      console.log(
+        `[${runId}] Individual simulation sending raw params:`,
+        JSON.stringify(formData, null, 2)
       );
-      console.log("Simulation response:", response.data);
-      return response.data;
+      console.log(
+        `[${runId}] Individual simulation sending formatted params:`,
+        JSON.stringify(formattedParams, null, 2)
+      );
+
+      try {
+        const response = await axios.post<SimulationResponse>(
+          "http://localhost:8000/api/simulate",
+          formattedParams
+        );
+
+        // More detailed debugging
+        console.log(`[${runId}] Received response from simulation`);
+        console.log(`[${runId}] Response status:`, response.status);
+        console.log(`[${runId}] Response headers:`, response.headers);
+
+        // Check if response data exists
+        if (!response.data) {
+          console.error(`[${runId}] Response data is empty or null`);
+          throw new Error("Empty response received from server");
+        }
+
+        // Validate critical parts of the response
+        if (!response.data.currentGenerationData) {
+          console.error(`[${runId}] Missing currentGenerationData in response`);
+        } else if (!response.data.currentGenerationData.jdr) {
+          console.error(`[${runId}] Missing jdr in currentGenerationData`);
+        } else {
+          console.log(
+            `[${runId}] JDR keys:`,
+            Object.keys(response.data.currentGenerationData.jdr)
+          );
+        }
+
+        // Log the simulation response ID to correlate with backend logs
+        console.log(`[${runId}] Results summary:`, {
+          builtInPotential: response.data.builtInPotential,
+          depletionWidth: response.data.depletionWidth,
+          currentTotal:
+            response.data.currentGenerationData?.solar_cell_parameters
+              ?.total_current,
+          electronLifetime:
+            response.data.currentGenerationData?.jdr?.["Electron-lifetime"],
+          holeLifetime:
+            response.data.currentGenerationData?.jdr?.["Hole-lifetime"],
+        });
+
+        return response.data;
+      } catch (error) {
+        console.error(`[${runId}] Error in simulation request:`, error);
+        if (axios.isAxiosError(error)) {
+          console.error(`[${runId}] Response status:`, error.response?.status);
+          console.error(`[${runId}] Response data:`, error.response?.data);
+        }
+        throw error;
+      }
     },
     onSuccess: async (data: SimulationResponse) => {
       console.log("Simulation completed successfully:", data);
@@ -122,6 +291,9 @@ const SimulationForm: React.FC = () => {
   });
 
   const onSubmit = (data: SimulationParams) => {
+    // Do not convert percent from percentage (0-100) to decimal (0-1)
+    // The backend expects percent to be in the range 0-100 and will apply the division by 100 itself
+
     mutation.mutate(data);
   };
 
@@ -166,14 +338,14 @@ const SimulationForm: React.FC = () => {
               {...register("donorConcentration", {
                 required: "Donor concentration is required",
                 min: {
-                  value: 0,
-                  message: "Concentration cannot be negative",
+                  value: 1e15,
+                  message: "Donor concentration must be at least 1e15 cm⁻³",
                 },
                 valueAsNumber: true,
                 pattern: {
                   value: /^[0-9eE+-.]+$/,
                   message: "Please enter a valid number",
-                },
+                } as any,
               })}
             />
             <FormErrorMessage>
@@ -189,14 +361,14 @@ const SimulationForm: React.FC = () => {
               {...register("acceptorConcentration", {
                 required: "Acceptor concentration is required",
                 min: {
-                  value: 0,
-                  message: "Concentration cannot be negative",
+                  value: 1e15,
+                  message: "Acceptor concentration must be at least 1e15 cm⁻³",
                 },
                 valueAsNumber: true,
                 pattern: {
                   value: /^[0-9eE+-.]+$/,
                   message: "Please enter a valid number",
-                },
+                } as any,
               })}
             />
             <FormErrorMessage>

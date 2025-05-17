@@ -21,7 +21,6 @@ perimittivity = 8.9
 absolutePermittivity = perimittivity * 8.85e-12
 print(mobility('n', 0, 300))
 maxMobilityElectrons = 1000
-thermalVoltage = 0.0259 #V at 300 K
 
 def ordered_integrate(func, x_start, x_end, num_points=100):
 
@@ -306,7 +305,7 @@ def JDR(xVal1,xVal2, xn, xp, W, lifetimeN, mobilityN, lifetimeP, mobilityP,nSide
     xVal1+=(1e-8)
     xVal2-=(1e-8)
 
-    epsilon = avgField
+    epsilon = 1
 
 
 
@@ -334,16 +333,11 @@ def JDR(xVal1,xVal2, xn, xp, W, lifetimeN, mobilityN, lifetimeP, mobilityP,nSide
     def intElecN(x):
         eF = ElecFieldAsXLoc(x)
 
+        epsilon = 100
 
-        # if abs(eF) < abs(epsilon):
-        #     eF = -epsilon  # Adjust based on scale (e.g., 1000 V/m)
+        if abs(eF) < abs(epsilon):
+            eF = -epsilon  # Adjust based on scale (e.g., 1000 V/m)
         # print(epsilon
-
-        if ((abs(eF)*10e-3)/thermalVoltage) < 1:
-            print("eF: "+str(eF))
-            eF = -epsilon
-            return 1
-
 
 
         if eF is None or mobilityN is None or lifetimeN is None:
@@ -356,10 +350,8 @@ def JDR(xVal1,xVal2, xn, xp, W, lifetimeN, mobilityN, lifetimeP, mobilityP,nSide
           # Adjust based on scale (e.g., 1000 V/m)
         # print(epsilon)
 
-        if ((abs(eF)*10e-3)/thermalVoltage) < 1:
-            print("eF: "+str(eF))
+        if abs(eF) < abs(epsilon):
             eF = -epsilon
-            return -1
 
         if eF is None or mobilityP is None or lifetimeP is None:
             return 0  # or some safe fallback
@@ -388,9 +380,9 @@ def JDR(xVal1,xVal2, xn, xp, W, lifetimeN, mobilityN, lifetimeP, mobilityP,nSide
 
         eF = ElecFieldAsXLoc(x)
 
+        epsilon = 100
 
-        if ((abs(eF)*10e-3)/thermalVoltage) < 1:
-            print("eF: "+str(eF))
+        if abs(eF) < abs(epsilon):
             eF = -epsilon
    
 
@@ -410,8 +402,7 @@ def JDR(xVal1,xVal2, xn, xp, W, lifetimeN, mobilityN, lifetimeP, mobilityP,nSide
         # print(accumulation)
 
         eF = ElecFieldAsXLoc(x)
-        if ((abs(eF)*10e-3)/thermalVoltage) < 1:
-            print("eF: "+str(eF))
+        if abs(eF) < abs(epsilon):
             eF = -epsilon
 
 
@@ -659,7 +650,7 @@ n = 1
 
 def print_top_10_results(results):
     # Sort top 10 by electron density (descending)
-    # Convert mpf and other values to float-safe copies for printing/saving
+        # Convert mpf and other values to float-safe copies for printing/saving
     def safe_float(val):
         try:
             return float(val)
@@ -686,7 +677,10 @@ def print_top_10_results(results):
         })
 
     top_by_density = sorted(results, key=lambda x: x['Current'], reverse=True)[:10]
+
+    # Sort top 10 by ratio closest to 1
     top_by_ratio = sorted(results, key=lambda x: abs(x['ratio'] - 1))[:10]
+
 
     # Helper function to print each table
     def print_table(title, entries, mode='current'):
@@ -724,40 +718,15 @@ def print_top_10_results(results):
     print_table("Top Configurations by Total Current", top_by_density, mode='current')
     print_table("Top Configurations by E/Emin Ratio ≈ 1", top_by_ratio, mode='ratio')
 
-    # Try to save results to CSV with error handling
-    try:
-        # Check available disk space before writing
-        import os
-        import shutil
-        
-        # Get the directory where we want to save the file
-        save_dir = os.path.dirname(os.path.abspath(__file__))
-        total, used, free = shutil.disk_usage(save_dir)
-        
-        # Estimate required space (rough estimate: 100 bytes per row)
-        required_space = len(formatted_results) * 100
-        
-        if free < required_space:
-            print(f"\n⚠️ Warning: Not enough disk space to save results. Required: {required_space/1024:.1f}KB, Available: {free/1024:.1f}KB")
-            print("Results will only be displayed in the terminal.")
-            return
-            
-        # If we have enough space, try to save
-        csv_path = os.path.join(save_dir, 'largeResults.csv')
-        with open(csv_path, 'w', newline='') as csvfile:
-            fieldnames = ['Electron density', 'Efield', 'Emin', 'ratio', 'nSide', 'pSide', 'percent', 'W', 'xp', 'xn', 'Total Current', 'Current-Electron', 'Current-Hole']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in formatted_results:
-                writer.writerow(row)
-        print(f"\n✅ All {len(results)} results saved to '{csv_path}'!")
-        
-    except OSError as e:
-        print(f"\n⚠️ Warning: Could not save results to file: {str(e)}")
-        print("Results will only be displayed in the terminal.")
-    except Exception as e:
-        print(f"\n⚠️ Warning: Unexpected error while saving results: {str(e)}")
-        print("Results will only be displayed in the terminal.")
+    # 📁 Save full dataset to CSV
+    with open('largeResults.csv', 'w', newline='') as csvfile:
+        fieldnames = ['Electron density', 'Efield', 'Emin', 'ratio', 'nSide', 'pSide', 'percent', 'W', 'xp', 'xn', 'Total Current', 'Current-Electron', 'Current-Hole']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in formatted_results:
+            writer.writerow(row)
+
+    print(f"\n✅ All {len(results)} results saved to 'largeResults.csv'!")
 
 
 

@@ -8,7 +8,6 @@ import {
   TabPanels,
   Tab,
   TabPanel,
-  Flex,
 } from "@chakra-ui/react";
 import SimulationForm from "./components/SimulationForm";
 import ParameterSweepForm from "./components/ParameterSweepForm";
@@ -23,15 +22,14 @@ function App() {
         <Box bg="gray.50" minH="100vh" py={8}>
           <Container maxW="container.xl">
             <Heading as="h1" mb={8} textAlign="center" color="blue.600">
-              GaN Physics Simulation Dashboard
+              Physics Simulation Dashboard
             </Heading>
 
-            <Tabs variant="enclosed" colorScheme="blue" size="lg">
-              <TabList>
-                <Tab>Single Simulation</Tab>
-                <Tab>Parameter Sweep</Tab>
+            <Tabs isFitted variant="enclosed" colorScheme="blue">
+              <TabList mb="1em">
+                <Tab fontWeight="semibold">Single Simulation</Tab>
+                <Tab fontWeight="semibold">Parameter Sweep</Tab>
               </TabList>
-
               <TabPanels>
                 <TabPanel>
                   <SimulationForm />
